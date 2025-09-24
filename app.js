@@ -6,34 +6,25 @@ const XLSX = require('xlsx');
 const archiver = require('archiver');
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
+
+// Vercel-optimized: Use /tmp directory exclusively
+const uploadDir = '/tmp/uploads';
+const outputDir = '/tmp/output';
 
 // Create necessary directories
-const uploadDir = path.join(__dirname, 'uploads');
-const outputDir = path.join(__dirname, 'output');
-
 if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir);
+    fs.mkdirSync(uploadDir, { recursive: true });
 }
 if (!fs.existsSync(outputDir)) {
-    fs.mkdirSync(outputDir);
+    fs.mkdirSync(outputDir, { recursive: true });
 }
 
-// Configure multer for file uploads
-const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        // Keep original filename
-        cb(null, file.originalname);
-    }
-});
-
+// Configure multer for file uploads - memory storage optimized for Vercel
 const upload = multer({ 
-    storage: storage,
+    storage: multer.memoryStorage(),
     limits: {
-        fileSize: 10 * 1024 * 1024 // 10MB limit
+        fileSize: 4.5 * 1024 * 1024 // 4.5MB limit optimized for Vercel serverless functions
     }
 });
 
@@ -66,6 +57,11 @@ app.get('/output/:filename', (req, res) => {
 // Download all files as ZIP
 app.get('/download-all', (req, res) => {
     try {
+        // Check if output directory exists first
+        if (!fs.existsSync(outputDir)) {
+            return res.status(404).json({ error: 'No files available for download' });
+        }
+        
         const files = fs.readdirSync(outputDir);
         
         if (files.length === 0) {
@@ -133,15 +129,18 @@ app.get('/download-all', (req, res) => {
     }
 });
 
-// Conversion function (same as before)
-function tdsToExcel(inputFile, outputFile) {
+// Vercel-optimized conversion function - processes buffer data directly
+function tdsToExcel(buffer, outputFile) {
     try {
-        const data = fs.readFileSync(inputFile, 'utf8');
+        // Convert buffer to string
+        const data = buffer.toString('utf8');
         const lines = data.split('\n');
         
+        // Parse delimited data (^ delimiter)
         const rows = lines.map(line => line.trim().split('^'));
         const maxLen = Math.max(...rows.map(row => row.length));
         
+        // Pad rows to ensure consistent column count
         const paddedRows = rows.map(row => {
             while (row.length < maxLen) {
                 row.push('');
@@ -149,6 +148,7 @@ function tdsToExcel(inputFile, outputFile) {
             return row;
         });
         
+        // Create Excel workbook
         const workbook = XLSX.utils.book_new();
         const worksheet = XLSX.utils.aoa_to_sheet(paddedRows);
         XLSX.utils.book_append_sheet(workbook, worksheet, 'Sheet1');
@@ -174,36 +174,40 @@ app.post('/upload', upload.array('files'), (req, res) => {
     const results = [];
     
     req.files.forEach(file => {
-        const inputPath = file.path;
-        
-        // Create output filename
-        let outputFilename;
-        if (file.originalname.includes('.')) {
-            outputFilename = file.originalname.substring(0, file.originalname.lastIndexOf('.')) + '.xlsx';
-        } else {
-            outputFilename = file.originalname + '.xlsx';
-        }
-        
-        const outputPath = path.join(outputDir, outputFilename);
-        
-        // Convert file
-        const success = tdsToExcel(inputPath, outputPath);
-        
-        if (success) {
-            results.push({
-                originalName: file.originalname,
-                convertedName: outputFilename,
-                downloadUrl: `/output/${outputFilename}`,
-                status: 'success'
-            });
+        try {
+            // Create output filename
+            let outputFilename;
+            if (file.originalname.includes('.')) {
+                outputFilename = file.originalname.substring(0, file.originalname.lastIndexOf('.')) + '.xlsx';
+            } else {
+                outputFilename = file.originalname + '.xlsx';
+            }
             
-            // Delete uploaded file after conversion
-            fs.unlinkSync(inputPath);
-        } else {
+            const outputPath = path.join(outputDir, outputFilename);
+            
+            // Convert file directly from buffer (Vercel-optimized)
+            const success = tdsToExcel(file.buffer, outputPath);
+            
+            if (success) {
+                results.push({
+                    originalName: file.originalname,
+                    convertedName: outputFilename,
+                    downloadUrl: `/output/${outputFilename}`,
+                    status: 'success'
+                });
+            } else {
+                results.push({
+                    originalName: file.originalname,
+                    status: 'error',
+                    message: 'Conversion failed'
+                });
+            }
+        } catch (error) {
+            console.error(`Error processing ${file.originalname}:`, error.message);
             results.push({
                 originalName: file.originalname,
                 status: 'error',
-                message: 'Conversion failed'
+                message: 'Processing failed'
             });
         }
     });
