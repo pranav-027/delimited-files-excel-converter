@@ -8,21 +8,19 @@ const archiver = require('archiver');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Vercel-optimized: Use /tmp directory exclusively
-const uploadDir = '/tmp/uploads';
+// Vercel-optimized: Use /tmp directory for temporary Excel files only
+// Note: We still need outputDir because XLSX.writeFile() requires a file path
+// and the ZIP download needs to read the generated Excel files
 const outputDir = '/tmp/output';
 
-// Create necessary directories
-if (!fs.existsSync(uploadDir)) {
-    fs.mkdirSync(uploadDir, { recursive: true });
-}
+// Create output directory for temporary Excel files
 if (!fs.existsSync(outputDir)) {
     fs.mkdirSync(outputDir, { recursive: true });
 }
 
-// Configure multer for file uploads - memory storage optimized for Vercel
+// Configure multer - memory storage only (no upload directory needed)
 const upload = multer({ 
-    storage: multer.memoryStorage(),
+    storage: multer.memoryStorage(), // Files processed directly from memory
     limits: {
         fileSize: 4.5 * 1024 * 1024 // 4.5MB limit optimized for Vercel serverless functions
     }
